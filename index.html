@@ -15,7 +15,6 @@ button:disabled{background:#ccc;transform:none;cursor:not-allowed}
 button.test{background:linear-gradient(135deg,#2196F3,#1976D2)}
 button.print{background:linear-gradient(135deg,#4CAF50,#388E3C)}
 input[type="file"]{width:100%;padding:15px;border:2px dashed #667eea;border-radius:10px;margin:10px 0;cursor:pointer;background:#f8f9ff}
-input[type="text"]{width:100%;padding:15px;border:2px solid #667eea;border-radius:10px;margin:10px 0;font-size:14px}
 .status{padding:15px;margin:20px 0;border-radius:10px;display:none;font-weight:500}
 .status.show{display:block}
 .success{background:#d4edda;color:#155724}
@@ -33,30 +32,43 @@ input[type="text"]{width:100%;padding:15px;border:2px solid #667eea;border-radiu
 <input type="file" id="fileInput" accept=".pdf" onchange="handleFile(this.files[0])">
 <button id="printBtn" onclick="printPDF()" disabled class="print">🖨️ Vytisknout soubor</button>
 
-<div class="divider">— NEBO VLOŽ ODKAZ —</div>
-<input type="text" id="urlInput" placeholder="https://go-balik.cz/...stiket.pdf" onpaste="handlePaste()">
-<button id="printUrlBtn" onclick="printFromURL()" disabled class="print">🖨️ Vytisknout z odkazu</button>
-
 <div id="status" class="status"></div>
 </div>
 <script>
-const RPI_URL = 'https://10.0.0.160:8090';
+const RPI_URL = 'http://10.0.0.160:8090';
 let selectedFile = null;
 
-// Automatické zpracování URL z parametru (pro propojení s GoBalík)
-window.addEventListener('DOMContentLoaded', () => {
-  const urlParams = new URLSearchParams(window.location.search);
-  const pdfUrl = urlParams.get('pdf_url');
+// Nasloucháme na zprávy z GoBalík userscriptu
+window.addEventListener('message', async (event) => {
+  console.log('Přijata zpráva:', event.origin, event.data);
   
-  if (pdfUrl) {
-    document.getElementById('urlInput').value = decodeURIComponent(pdfUrl);
-    document.getElementById('printUrlBtn').disabled = false;
-    showStatus('🔗 Odkaz načten z GoBalíku', 'info');
+  // Kontrola původu (bezpečnost)
+  if (event.origin !== 'https://go-balik.cz') {
+    console.warn('Zpráva z neznámého původu:', event.origin);
+    return;
+  }
+  
+  if (event.data.type === 'PRINT_PDF' && event.data.pdf) {
+    showStatus('📥 PDF přijato z GoBalíku...', 'info');
     
-    // Automaticky vytiskni po 1 sekundě
-    setTimeout(() => {
-      printFromURL(true);
-    }, 1000);
+    try {
+      // Převedeme base64 zpět na ArrayBuffer
+      const binary = atob(event.data.pdf);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const arrayBuffer = bytes.buffer;
+      
+      console.log('PDF velikost:', arrayBuffer.byteLength, 'bytes');
+      
+      // Vytiskneme
+      await sendToPrinter(arrayBuffer, event.data.ref || 'stiket.pdf');
+      
+    } catch (error) {
+      showStatus('❌ Chyba: ' + error.message, 'error');
+      console.error('Chyba při zpracování PDF:', error);
+    }
   }
 });
 
@@ -91,13 +103,6 @@ function handleFile(file) {
   document.getElementById('printBtn').disabled = false;
 }
 
-function handlePaste() {
-  setTimeout(() => {
-    const url = document.getElementById('urlInput').value.trim();
-    document.getElementById('printUrlBtn').disabled = !url;
-  }, 100);
-}
-
 async function printPDF() {
   if (!selectedFile) return;
   
@@ -107,61 +112,22 @@ async function printPDF() {
   
   try {
     const arrayBuffer = await selectedFile.arrayBuffer();
-    const formData = new FormData();
-    formData.append('file', new Blob([arrayBuffer], {type: 'application/pdf'}), selectedFile.name);
+    await sendToPrinter(arrayBuffer, selectedFile.name);
     
-    const response = await fetch(RPI_URL + '/print', {
-      method: 'POST',
-      body: formData
-    });
+    selectedFile = null;
+    document.getElementById('fileInput').value = '';
+    btn.disabled = true;
     
-    if (response.ok) {
-      showStatus('✅ Vytištěno na Zebra ZD230!', 'success');
-      selectedFile = null;
-      document.getElementById('fileInput').value = '';
-      btn.disabled = true;
-    } else {
-      throw new Error('HTTP ' + response.status);
-    }
   } catch (error) {
     showStatus('❌ Chyba: ' + error.message, 'error');
     btn.disabled = false;
   }
 }
 
-async function printFromURL(autoMode = false) {
-  const urlInput = document.getElementById('urlInput');
-  const url = urlInput.value.trim();
-  
-  if (!url) {
-    showStatus('⚠️ Prosím vlož platný odkaz na PDF!', 'error');
-    return;
-  }
-  
-  const btn = document.getElementById('printUrlBtn');
-  btn.disabled = true;
-  showStatus('📥 Stahuji PDF z odkazu...', 'info');
+async function sendToPrinter(arrayBuffer, fileName) {
+  showStatus('📤 Odesílám na Zebra tiskárnu...', 'info');
   
   try {
-    // Stáhneme PDF z URL (přes CORS proxy, pokud je potřeba)
-    let pdfResponse;
-    try {
-      pdfResponse = await fetch(url);
-    } catch (corsError) {
-      // Pokud CORS blokuje, zkusíme proxy
-      showStatus('🔄 Používám CORS proxy...', 'info');
-      pdfResponse = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url));
-    }
-    
-    if (!pdfResponse.ok) {
-      throw new Error('Nelze stáhnout PDF (HTTP ' + pdfResponse.status + ')');
-    }
-    
-    const arrayBuffer = await pdfResponse.arrayBuffer();
-    const fileName = url.split('/').pop().split('?')[0] || 'stiket.pdf';
-    
-    showStatus('📤 Odesílám na tiskárnu...', 'info');
-    
     const formData = new FormData();
     formData.append('file', new Blob([arrayBuffer], {type: 'application/pdf'}), fileName);
     
@@ -172,27 +138,23 @@ async function printFromURL(autoMode = false) {
     
     if (response.ok) {
       showStatus('✅ Vytištěno na Zebra ZD230!', 'success');
-      urlInput.value = '';
-      btn.disabled = true;
       
-      // Pokud jsme v auto-režimu (z GoBalíku), zavřeme okno po 3 sekundách
-      if (autoMode) {
-        setTimeout(() => {
-          window.close();
-        }, 3000);
-      }
+      // Zavřeme okno po 3 sekundách
+      setTimeout(() => {
+        window.close();
+      }, 3000);
     } else {
-      throw new Error('HTTP ' + response.status);
+      throw new Error('Tisk selhal (HTTP ' + response.status + ')');
     }
   } catch (error) {
-    showStatus('❌ Chyba: ' + error.message, 'error');
-    btn.disabled = false;
+    throw error;
   }
 }
 
-// Poslouchej na URL změny v inputu
-document.getElementById('urlInput').addEventListener('input', function() {
-  document.getElementById('printUrlBtn').disabled = !this.value.trim();
+// Při načtení stránky
+window.addEventListener('DOMContentLoaded', () => {
+  showStatus('⏳ Čekám na PDF z GoBalíku...', 'info');
+  console.log('Zebra Print připravena, čekám na zprávu z GoBalíku...');
 });
 </script>
 </body>
