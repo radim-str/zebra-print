@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zebra Print</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.container{background:#fff;padding:40px;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,0.3);max-width:600px;width:100%}
+h1{color:#333;margin-bottom:30px;font-size:32px;text-align:center}
+button{width:100%;padding:18px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;border:none;border-radius:10px;font-size:18px;font-weight:600;cursor:pointer;margin:10px 0;transition:transform 0.2s}
+button:hover{transform:translateY(-2px)}
+button:disabled{background:#ccc;transform:none;cursor:not-allowed}
+button.test{background:linear-gradient(135deg,#2196F3,#1976D2)}
+button.print{background:linear-gradient(135deg,#4CAF50,#388E3C)}
+input[type="file"]{width:100%;padding:15px;border:2px dashed #667eea;border-radius:10px;margin:10px 0;cursor:pointer;background:#f8f9ff}
+.status{padding:15px;margin:20px 0;border-radius:10px;display:none;font-weight:500}
+.status.show{display:block}
+.success{background:#d4edda;color:#155724}
+.error{background:#f8d7da;color:#721c24}
+.info{background:#d1ecf1;color:#0c5460}
+.divider{text-align:center;margin:20px 0;color:#999;font-weight:600}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>🖨️ Zebra Print</h1>
+<button onclick="testConnection()" class="test">🔌 Test Raspberry Pi</button>
+
+<div class="divider">— NAHRAJ SOUBOR —</div>
+<input type="file" id="fileInput" accept=".pdf" onchange="handleFile(this.files[0])">
+<button id="printBtn" onclick="printPDF()" disabled class="print">🖨️ Vytisknout soubor</button>
+
+<div id="status" class="status"></div>
+</div>
+<script>
+const RPI_URL = 'http://10.0.0.160:8090';
+let selectedFile = null;
+
+// Nasloucháme na zprávy z GoBalík userscriptu
+window.addEventListener('message', async (event) => {
+  console.log('Přijata zpráva:', event.origin, event.data);
+  
+  // Kontrola původu (bezpečnost)
+  if (event.origin !== 'https://go-balik.cz') {
+    console.warn('Zpráva z neznámého původu:', event.origin);
+    return;
+  }
+  
+  if (event.data.type === 'PRINT_PDF' && event.data.pdf) {
+    showStatus('📥 PDF přijato z GoBalíku...', 'info');
+    
+    try {
+      // Převedeme base64 zpět na ArrayBuffer
+      const binary = atob(event.data.pdf);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const arrayBuffer = bytes.buffer;
+      
+      console.log('PDF velikost:', arrayBuffer.byteLength, 'bytes');
+      
+      // Vytiskneme
+      await sendToPrinter(arrayBuffer, event.data.ref || 'stiket.pdf');
+      
+    } catch (error) {
+      showStatus('❌ Chyba: ' + error.message, 'error');
+      console.error('Chyba při zpracování PDF:', error);
+    }
+  }
+});
+
+function showStatus(message, type) {
+  const status = document.getElementById('status');
+  status.textContent = message;
+  status.className = 'status show ' + type;
+}
+
+async function testConnection() {
+  showStatus('⏳ Testuji spojení...', 'info');
+  try {
+    const response = await fetch(RPI_URL + '/status');
+    if (response.ok) {
+      const data = await response.json();
+      showStatus('✅ Připojeno: ' + data.printer, 'success');
+    } else {
+      throw new Error('HTTP ' + response.status);
+    }
+  } catch (error) {
+    showStatus('❌ Chyba: ' + error.message, 'error');
+  }
+}
+
+function handleFile(file) {
+  if (!file || file.type !== 'application/pdf') {
+    showStatus('⚠️ Prosím nahraj pouze PDF soubor!', 'error');
+    return;
+  }
+  selectedFile = file;
+  showStatus('✅ Připraveno: ' + file.name + ' (' + (file.size/1024).toFixed(2) + ' KB)', 'success');
+  document.getElementById('printBtn').disabled = false;
+}
+
+async function printPDF() {
+  if (!selectedFile) return;
+  
+  const btn = document.getElementById('printBtn');
+  btn.disabled = true;
+  showStatus('📤 Odesílám na tiskárnu...', 'info');
+  
+  try {
+    const arrayBuffer = await selectedFile.arrayBuffer();
+    await sendToPrinter(arrayBuffer, selectedFile.name);
+    
+    selectedFile = null;
+    document.getElementById('fileInput').value = '';
+    btn.disabled = true;
+    
+  } catch (error) {
+    showStatus('❌ Chyba: ' + error.message, 'error');
+    btn.disabled = false;
+  }
+}
+
+async function sendToPrinter(arrayBuffer, fileName) {
+  showStatus('📤 Odesílám na Zebra tiskárnu...', 'info');
+  
+  try {
+    const formData = new FormData();
+    formData.append('file', new Blob([arrayBuffer], {type: 'application/pdf'}), fileName);
+    
+    const response = await fetch(RPI_URL + '/print', {
+      method: 'POST',
+      body: formData
+    });
+    
+    if (response.ok) {
+      showStatus('✅ Vytištěno na Zebra ZD230!', 'success');
+      
+      // Zavřeme okno po 3 sekundách
+      setTimeout(() => {
+        window.close();
+      }, 3000);
+    } else {
+      throw new Error('Tisk selhal (HTTP ' + response.status + ')');
+    }
+  } catch (error) {
+    throw error;
+  }
+}
+
+// Při načtení stránky
+window.addEventListener('DOMContentLoaded', () => {
+  showStatus('⏳ Čekám na PDF z GoBalíku...', 'info');
+  console.log('Zebra Print připravena, čekám na zprávu z GoBalíku...');
+});
+</script>
+</body>
+</html>
